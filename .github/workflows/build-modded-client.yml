@@ -109,8 +109,9 @@ jobs:
             cp resources/resource-overlay-normal.zip build-inputs/resource-overlay-normal.zip
           fi
 
-          if [[ -s resources/music.epk ]]; then
-            cp resources/music.epk build-inputs/music.epk
+          # Prefer the exact 26.2 U1 music resource pack source when available.
+          if [[ ! -s build-inputs/music-resource-pack.zip && -s resources/music-resource-pack.zip ]]; then
+            cp resources/music-resource-pack.zip build-inputs/music-resource-pack.zip
           fi
 
           # This is the exact sounds.epk shipped by the public compiled
@@ -122,9 +123,122 @@ jobs:
             curl --fail --location --retry 5 --retry-delay 3 --retry-all-errors               --proto '=https' --tlsv1.2               "https://github.com/eymenwsmc/playopspt.github.io/raw/refs/heads/main/262/sounds.epk"               -o build-inputs/sounds.epk
           fi
 
+          if [[ ! -s build-inputs/music-resource-pack.zip ]]; then
+            echo "Downloading the exact Eaglercraft 26.2 U1 music resource pack..."
+            curl --fail --location --retry 5 --retry-delay 3 --retry-all-errors \
+              --proto '=https' --tlsv1.2 \
+              "https://eaglercraft-26-2-u1-cdn.u2471966200.workers.dev/eaglercraft-26.2-u1-music-resource-pack.zip" \
+              -o build-inputs/music-resource-pack.zip
+          fi
+
+          # Extract the music.epk consumed by the patcher.
+          if [[ ! -s build-inputs/music.epk ]]; then
+            unzip -l build-inputs/music-resource-pack.zip | grep -qE '(^|/)music\.epk
+
+          test -s build-inputs/sounds.epk
+          echo "SOUNDS_SHA256=$(sha256sum build-inputs/sounds.epk | cut -d' ' -f1)" >> "${GITHUB_ENV}"
+          echo "MUSIC_SHA256=$(sha256sum build-inputs/music.epk | cut -d' ' -f1)" >> "${GITHUB_ENV}"
+          echo "OVERLAY_SHA256=$(sha256sum build-inputs/resource-overlay-normal.zip | cut -d' ' -f1)" >> "${GITHUB_ENV}"
+
+      - name: Download Minecraft 26.2 client directly from Mojang
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 5 --retry-delay 3 --retry-all-errors             --proto '=https' --tlsv1.2             "https://piston-data.mojang.com/v1/objects/${MC_SHA1}/client.jar"             -o build-inputs/minecraft-26.2-client.jar
+          test -s build-inputs/minecraft-26.2-client.jar
+
+      - name: Use pinned Vineflower 1.12.0
+        run: |
+          set -euo pipefail
+          cp resource/vineflower-1.12.0.jar build-inputs/vineflower-1.12.0.jar
+          test -s build-inputs/vineflower-1.12.0.jar
+
+      - name: Generate project skeleton
+        run: |
+          set -euo pipefail
+          python3 code/patcher/project-skeleton/export_skeleton.py             --root "$GITHUB_WORKSPACE"             --output "$GITHUB_WORKSPACE/build-inputs/project-skeleton-iwa.zip"
+
+      - name: Verify all pinned inputs
+        run: |
+          set -euo pipefail
+          test "$(sha256sum build-inputs/minecraft-26.2-client.jar | cut -d' ' -f1)" = "${MC_SHA256}"
+          test "$(sha1sum build-inputs/minecraft-26.2-client.jar | cut -d' ' -f1)" = "${MC_SHA1}"
+          test "$(sha256sum build-inputs/vineflower-1.12.0.jar | cut -d' ' -f1)" = "${VINEFLOWER_SHA256}"
+          test "$(sha256sum build-inputs/source-patch-bundle.zip | cut -d' ' -f1)" = "${PATCH_BUNDLE_SHA256}"
+
+      - name: Generate complete 26.2 project
+        run: |
+          set -euo pipefail
+          code/patcher/java-cli/run.sh build-standalone             --jar "$GITHUB_WORKSPACE/build-inputs/minecraft-26.2-client.jar"             --output "$GITHUB_WORKSPACE/project"             --vineflower "$GITHUB_WORKSPACE/build-inputs/vineflower-1.12.0.jar"             --java17 "${JAVA_HOME_17_X64}/bin/java"             --patch-bundle "$GITHUB_WORKSPACE/build-inputs/source-patch-bundle.zip"             --expected-bundle-sha256 "${PATCH_BUNDLE_SHA256}"             --project-skeleton "$GITHUB_WORKSPACE/build-inputs/project-skeleton-iwa.zip"             --expected-skeleton-sha256 e76f606630ce6596061e7ac5a76d01a541846cac7d8d1424ec38a942ab00c071             --resource-overlay "$GITHUB_WORKSPACE/build-inputs/resource-overlay-normal.zip"             --expected-resource-overlay-sha256 "${OVERLAY_SHA256}"             --external-resource-root "$GITHUB_WORKSPACE/build-inputs/external-resource-root"             --java25 "${JAVA_HOME_25_X64}/bin/java"             --node "$(command -v node)"             --npm "$(command -v npm)"             --sounds-epk "$GITHUB_WORKSPACE/build-inputs/sounds.epk"             --expected-sounds-epk-sha256 "${SOUNDS_SHA256}"             --music-epk "$GITHUB_WORKSPACE/build-inputs/music.epk"             --expected-music-epk-sha256 "${MUSIC_SHA256}"             --standalone-output "$GITHUB_WORKSPACE/release/bootstrap.html"             --music-pack-output "$GITHUB_WORKSPACE/release/eaglercraft-26.2-music-resource-pack.zip"             --build-timeout-seconds 7200
+
+      - name: Install VBV companion assets
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/vbv-pack
+          git clone --depth 1 --filter=blob:none --sparse             https://github.com/melonman106/ChatGPT.git /tmp/vbv-pack
+          git -C /tmp/vbv-pack sparse-checkout set             resourcepacks/ViaBackportVisuals-26.2-VBPlus-26.3-Companion
+          pack=/tmp/vbv-pack/resourcepacks/ViaBackportVisuals-26.2-VBPlus-26.3-Companion
+          test -d "${pack}/assets"
+          cp -a "${pack}/assets/." project/game/src/main/resources/
+
+      - name: Apply native VBV integration
+        run: |
+          set -euo pipefail
+          chmod +x ModdedClient/apply-vbv.sh
+          ModdedClient/apply-vbv.sh project
+
+      - name: Compile patched source
+        working-directory: project
+        run: |
+          set -euo pipefail
+          ./gradlew :game:compileJava --console=plain --no-daemon
+
+      - name: Build final VBV HTML
+        run: |
+          set -euo pipefail
+          rm -f release/eaglercraft-26.2-vbv.html
+          code/patcher/java-cli/run.sh build-standalone             --jar "$GITHUB_WORKSPACE/build-inputs/minecraft-26.2-client.jar"             --output "$GITHUB_WORKSPACE/project"             --vineflower "$GITHUB_WORKSPACE/build-inputs/vineflower-1.12.0.jar"             --java17 "${JAVA_HOME_17_X64}/bin/java"             --patch-bundle "$GITHUB_WORKSPACE/build-inputs/source-patch-bundle.zip"             --expected-bundle-sha256 "${PATCH_BUNDLE_SHA256}"             --project-skeleton "$GITHUB_WORKSPACE/build-inputs/project-skeleton-iwa.zip"             --expected-skeleton-sha256 e76f606630ce6596061e7ac5a76d01a541846cac7d8d1424ec38a942ab00c071             --resource-overlay "$GITHUB_WORKSPACE/build-inputs/resource-overlay-normal.zip"             --expected-resource-overlay-sha256 "${OVERLAY_SHA256}"             --external-resource-root "$GITHUB_WORKSPACE/build-inputs/external-resource-root"             --java25 "${JAVA_HOME_25_X64}/bin/java"             --node "$(command -v node)"             --npm "$(command -v npm)"             --sounds-epk "$GITHUB_WORKSPACE/build-inputs/sounds.epk"             --expected-sounds-epk-sha256 "${SOUNDS_SHA256}"             --music-epk "$GITHUB_WORKSPACE/build-inputs/music.epk"             --expected-music-epk-sha256 "${MUSIC_SHA256}"             --standalone-output "$GITHUB_WORKSPACE/release/eaglercraft-26.2-vbv.html"             --music-pack-output "$GITHUB_WORKSPACE/release/eaglercraft-26.2-music-resource-pack.zip"             --reuse-project             --build-timeout-seconds 7200
+          test -s release/eaglercraft-26.2-vbv.html
+
+      - name: Archive generated project
+        uses: actions/upload-artifact@v4
+        with:
+          name: eaglercraft-26.2-generated-project-vbv
+          path: project/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Archive HTML release
+        uses: actions/upload-artifact@v4
+        with:
+          name: eaglercraft-26.2-vbv-release
+          path: release/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f release/bootstrap.html
+          git add release
+          if git diff --cached --quiet; then
+            echo "No release changes."
+          else
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git commit -m 'Build Eagler 26.2 ViaBackportVisuals client'
+            git push
+          fi
+ || {
+              echo "::error::The U1 music resource pack does not contain music.epk."
+              exit 1
+            }
+            unzip -j -o build-inputs/music-resource-pack.zip 'music.epk' -d build-inputs/
+          fi
+
           for name in resource-overlay-normal.zip music.epk; do
-            if [[ ! -s "build-inputs/${name}" ]]; then
-              echo "::error::Missing build input: resources/${name}"
+            if [[ ! -s "build-inputs/$name" ]]; then
+              echo "::error::Missing build input: $name"
               exit 1
             fi
           done
