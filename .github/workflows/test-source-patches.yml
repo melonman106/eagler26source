@@ -58,7 +58,7 @@ jobs:
           MC_SHA256: 40896ee9f1e2bec3c934daac7e93d41e9e3d9c2f8ae0ca366d52ffbfd1afa290
         run: |
           set -euo pipefail
-          mkdir -p build-inputs release
+          mkdir -p build-inputs release output
           curl --fail --location --retry 5 --retry-all-errors \
             --proto '=https' --tlsv1.2 \
             "https://piston-data.mojang.com/v1/objects/$MC_SHA1/client.jar" \
@@ -77,7 +77,7 @@ jobs:
           set -euo pipefail
           python3 code/patcher/project-skeleton/export_skeleton.py \
             --root "$GITHUB_WORKSPACE" \
-            --output "$GITHUB_WORKSPACE/build-inputs/project-skeleton-iwa.zip"
+            --output "$GITHUB_WORKSPACE/output/project-skeleton-iwa.zip"
 
       - name: Look for a usable source patch input
         run: |
