@@ -1,0 +1,16 @@
+{
+  "format": 1,
+  "protocol": "viabackportvisuals:marker",
+  "visualIds": {
+    "woolStairs": [0, 15],
+    "woolSlabs": [16, 31],
+    "concreteStairs": [32, 47],
+    "concreteSlabs": [48, 63],
+    "strawBed": 64
+  },
+  "rendering": {
+    "scope": "position",
+    "globalBlockstateOverrides": false,
+    "usesPlaceholderCollision": true
+  }
+}
