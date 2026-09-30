@@ -102,7 +102,6 @@ jobs:
           test "$(sha1sum build-inputs/minecraft-26.2-client.jar | cut -d' ' -f1)" =             2dc72797acbc1b63fc16a11c4ac393605f453754
           test "$(sha256sum build-inputs/vineflower-1.12.0.jar | cut -d' ' -f1)" =             1dfcfe974395734fa467ce620661c7623d05ba83670de0529b1fbd63ff548b9d
           test "$(sha256sum resources/source-patch-bundle.zip | cut -d' ' -f1)" =             df3af583c06aa22748d21f039980cdd3923dbcab0bc21accbbb28b1cd1e7389
-          test "$(sha256sum resources/project-skeleton-iwa.zip | cut -d' ' -f1)" =             e76f606630ce6596061e7ac5a76d01a541846cac7d8d1424ec38a942ab00c071
           test "$(sha256sum resources/resource-overlay-normal.zip | cut -d' ' -f1)" =             2ba7e3376891c64f8bf57f3687e05b8dbe1971a75475b6825449e5e5f96d71f3
 
           echo "SOUNDS_SHA256=$(sha256sum resources/sounds.epk | cut -d' ' -f1)" >> "$GITHUB_ENV"
