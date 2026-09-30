@@ -1,4 +1,4 @@
-name: Build Modded Eagler 26.2 client
+name: Generate and build Modded Eagler 26.2 client
 
 on:
   workflow_dispatch:
@@ -13,6 +13,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Set up Java 25
         uses: actions/setup-java@v4
         with:
@@ -22,37 +28,69 @@ jobs:
       - name: Set up Node 24
         uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          distribution: temurin
+          java-version: '25'
 
-      - name: Check required folders
+      - name: Check authorized build inputs
+        shell: bash
         run: |
-          test -d code/patcher
-          test -d ModdedClient
-          echo 'Patcher and ModdedClient are present.'
+          set -euo pipefail
+          required=(
+            minecraft-26.2-client.jar
+            vineflower-1.12.0.jar
+            source-patch-bundle.zip
+            project-skeleton-iwa.zip
+            resource-overlay-normal.zip
+            sounds.epk
+            music.epk
+          )
+          for f in "${required[@]}"; do
+            test -f "build-inputs/$f" || { echo "Missing build-inputs/$f"; exit 1; }
+          done
+          test -d build-inputs/external-resource-root || { echo "Missing build-inputs/external-resource-root"; exit 1; }
 
       - name: Build Eagler patcher
         working-directory: code/patcher/java-cli
         run: |
-          chmod +x build.sh
+          chmod +x build.sh run.sh
           ./build.sh
 
-      - name: Find generated Eagler project
-        id: project
+      - name: Generate project and standalone HTML
         shell: bash
+        env:
+          JAVA17: ${{ env.JAVA_HOME_17_X64 }}
+          JAVA25: ${{ env.JAVA_HOME_25_X64 }}
+          SOUNDS_EPK_SHA256: ${{ secrets.SOUNDS_EPK_SHA256 }}
+          MUSIC_EPK_SHA256: ${{ secrets.MUSIC_EPK_SHA256 }}
         run: |
           set -euo pipefail
-          for dir in project generated-project; do
-            if [[ -f "$dir/build.gradle.kts" && -d "$dir/game/src/main/java" ]]; then
-              echo "dir=$dir" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          done
-          echo 'No generated Eagler 26.2 project is present.'
-          echo 'The repository intentionally does not redistribute restricted/decompiled game inputs.'
-          echo 'Generate an authorized project and place it at project/ or generated-project/ before running this workflow.'
-          exit 1
+          rm -rf project release
+          mkdir -p release
+          test -n "${SOUNDS_EPK_SHA256}" || { echo "Missing SOUNDS_EPK_SHA256 secret"; exit 1; }
+          test -n "${MUSIC_EPK_SHA256}" || { echo "Missing MUSIC_EPK_SHA256 secret"; exit 1; }
 
-      - name: Fetch VBV companion assets
+          code/patcher/java-cli/run.sh build-standalone \
+            --jar "$GITHUB_WORKSPACE/build-inputs/minecraft-26.2-client.jar" \
+            --output "$GITHUB_WORKSPACE/project" \
+            --vineflower "$GITHUB_WORKSPACE/build-inputs/vineflower-1.12.0.jar" \
+            --java17 "$JAVA17/bin/java" \
+            --patch-bundle "$GITHUB_WORKSPACE/build-inputs/source-patch-bundle.zip" \
+            --expected-bundle-sha256 df3af583c06aa22748d21f039980cdd3923dbcab0bc21accbbb28b1cd1e7389 \
+            --java25 "$JAVA25/bin/java" \
+            --node "$(command -v node)" \
+            --npm "$(command -v npm)" \
+            --sounds-epk "$GITHUB_WORKSPACE/build-inputs/sounds.epk" \
+            --expected-sounds-epk-sha256 "$SOUNDS_EPK_SHA256" \
+            --music-epk "$GITHUB_WORKSPACE/build-inputs/music.epk" \
+            --expected-music-epk-sha256 "$MUSIC_EPK_SHA256" \
+            --project-skeleton "$GITHUB_WORKSPACE/build-inputs/project-skeleton-iwa.zip" \
+            --expected-skeleton-sha256 e76f606630ce6596061e7ac5a76d01a541846cac7d8d1424ec38a942ab00c071 \
+            --resource-overlay "$GITHUB_WORKSPACE/build-inputs/resource-overlay-normal.zip" \
+            --expected-resource-overlay-sha256 2ba7e3376891c64f8bf57f3687e05b8dbe1971a75475b6825449e5e5f96d71f3 \
+            --external-resource-root "$GITHUB_WORKSPACE/build-inputs/external-resource-root" \
+            --standalone-output "$GITHUB_WORKSPACE/release/eaglercraft-26.2-vbv.html"
+
+      - name: Fetch VBV companion resources
         shell: bash
         run: |
           set -euo pipefail
@@ -60,59 +98,35 @@ jobs:
           git clone --depth 1 https://github.com/melonman106/ChatGPT.git /tmp/vbv-pack
           pack=/tmp/vbv-pack/resourcepacks/ViaBackportVisuals-26.2-VBPlus-26.3-Companion
           test -d "$pack/assets"
-          mkdir -p "${{ steps.project.outputs.dir }}/game/src/main/resources"
-          rm -rf "${{ steps.project.outputs.dir }}/game/src/main/resources/assets/minecraft/models/block"
-          mkdir -p "${{ steps.project.outputs.dir }}/game/src/main/resources/assets/minecraft/models/block"
-          cp -a "$pack/assets/minecraft/models/block/." "${{ steps.project.outputs.dir }}/game/src/main/resources/assets/minecraft/models/block/"
-          echo 'VBV model assets bundled into the native client resources.'
-          echo 'Blockstate overrides are deliberately not copied.'
+          cp -a "$pack/assets/." project/game/src/main/resources/
 
-      - name: Apply native VBV client integration
+      - name: Apply native VBV integration
         run: |
           chmod +x ModdedClient/apply-vbv.sh
-          ModdedClient/apply-vbv.sh "${{ steps.project.outputs.dir }}"
+          ModdedClient/apply-vbv.sh project
 
-      - name: Compile client Java
-        working-directory: ${{ steps.project.outputs.dir }}
+      - name: Compile patched Java
+        working-directory: project
         run: ./gradlew :game:compileJava --console=plain --no-daemon
 
-      - name: Build standalone HTML
-        working-directory: ${{ steps.project.outputs.dir }}
-        run: ./gradlew build --console=plain --no-daemon
-
-      - name: Collect HTML release
-        shell: bash
+      - name: Verify release
         run: |
           set -euo pipefail
-          rm -rf release
-          mkdir -p release
-          found=0
-          while IFS= read -r -d '' file; do
-            cp "$file" "release/$(basename "$file")"
-            found=1
-          done < <(find "${{ steps.project.outputs.dir }}" -type f -name '*.html' -print0)
-          if [[ "$found" -eq 0 ]]; then
-            echo 'No HTML output was produced.'
-            exit 1
-          fi
-          echo 'Bundled VBV model resources are part of the generated client build.'
-          ls -lh release
+          test -s release/eaglercraft-26.2-vbv.html
+          ls -lh release/eaglercraft-26.2-vbv.html
 
-      - name: Upload HTML artifact
+      - name: Upload release
         uses: actions/upload-artifact@v4
         with:
           name: Eaglercraft-26.2-ViaBackportVisuals
-          path: release/
+          path: release/eaglercraft-26.2-vbv.html
           if-no-files-found: error
 
-      - name: Commit release folder
+      - name: Commit release
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add release
-          if git diff --cached --quiet; then
-            echo 'No release changes to commit.'
-            exit 0
-          fi
+          if git diff --cached --quiet; then exit 0; fi
           git commit -m 'Build ViaBackportVisuals Eagler client release'
           git push
