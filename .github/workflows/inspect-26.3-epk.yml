@@ -1,0 +1,124 @@
+name: Inspect 26.3 EPK Assets
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-epk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check EPK
+        run: |
+          set -euo pipefail
+          test -s eag26.3-assets.epk
+          echo "EPK: eag26.3-assets.epk"
+          echo "Size: $(stat -c '%s bytes' eag26.3-assets.epk)"
+          echo "SHA256: $(sha256sum eag26.3-assets.epk | cut -d' ' -f1)"
+          file eag26.3-assets.epk
+          echo "First 32 bytes:"
+          xxd -l 32 eag26.3-assets.epk
+
+      - name: Download Eagler Binary Tools
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 5 --retry-all-errors             --proto '=https' --tlsv1.2             "https://raw.githubusercontent.com/lax1dude/eagler-binary-tools/main/EaglerBinaryTools.jar"             -o EaglerBinaryTools.jar
+          test -s EaglerBinaryTools.jar
+          java -version
+          java -jar EaglerBinaryTools.jar >/tmp/epk-help.txt 2>&1 || true
+          cat /tmp/epk-help.txt
+
+      - name: Decompile EPK
+        run: |
+          set -euo pipefail
+          rm -rf extracted-26.3
+          mkdir -p extracted-26.3
+          java -jar EaglerBinaryTools.jar epkdecompiler eag26.3-assets.epk extracted-26.3
+
+          echo "Extracted files: $(find extracted-26.3 -type f | wc -l)"
+          echo "Extracted bytes: $(du -sb extracted-26.3 | cut -f1)"
+
+      - name: Analyze 26.3 assets
+        run: |
+          set -euo pipefail
+          mkdir -p analysis
+
+          find extracted-26.3 -type f -printf '%p\t%s bytes\n' | sort > analysis/all-files.tsv
+
+          {
+            echo "# Eaglercraft 26.3 EPK inspection"
+            echo
+            echo "- Source: `eag26.3-assets.epk`"
+            echo "- EPK SHA-256: `$(sha256sum eag26.3-assets.epk | cut -d' ' -f1)`"
+            echo "- Extracted files: `$(find extracted-26.3 -type f | wc -l)`"
+            echo "- Extracted bytes: `$(du -sb extracted-26.3 | cut -f1)`"
+            echo
+            echo "## Candidate 26.3 stair/slab/bed assets"
+            echo
+            find extracted-26.3 -type f | grep -Ei '(stair|slab|bed|wool|concrete|hay|straw)' | sort || true
+            echo
+            echo "## 26.3-specific block/item paths"
+            echo
+            find extracted-26.3 -type f | grep -Ei '(dapple|poplar|cushion|shelf|mushroom|shrub|boat|exploration|camp)' | sort || true
+            echo
+            echo "## JSON/model/blockstate files"
+            echo
+            echo "JSON: $(find extracted-26.3 -type f -iname '*.json' | wc -l)"
+            echo "Models: $(find extracted-26.3 -type f -path '*/models/*' | wc -l)"
+            echo "Blockstates: $(find extracted-26.3 -type f -path '*/blockstates/*' | wc -l)"
+            echo
+            echo "## Relevant JSON references"
+            grep -RniE '(stair|slab|bed|wool|concrete|hay|straw|dapple|poplar|cushion|shelf|mushroom|shrub)' extracted-26.3 --include='*.json' | head -n 1000 || true
+          } | tee analysis/report.md
+
+          # Make a compact list specifically useful for building the VBV resource overlay.
+          find extracted-26.3 -type f             | grep -Ei '(assets/minecraft/(textures|models|blockstates)/.*(wool|concrete|stair|slab|bed)|straw|hay)'             | sort > analysis/vbv-candidate-files.txt || true
+
+          echo
+          echo "=== VBV candidate files ==="
+          cat analysis/vbv-candidate-files.txt || true
+
+      - name: Build extracted-assets archive
+        run: |
+          set -euo pipefail
+          tar -czf eag26.3-assets-extracted.tar.gz extracted-26.3 analysis
+          sha256sum eag26.3-assets-extracted.tar.gz > eag26.3-assets-extracted.tar.gz.sha256
+
+      - name: Upload inspection results
+        uses: actions/upload-artifact@v4
+        with:
+          name: eag26.3-assets-inspection
+          path: |
+            analysis/
+            eag26.3-assets-extracted.tar.gz
+            eag26.3-assets-extracted.tar.gz.sha256
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Job summary
+        run: |
+          {
+            echo "## 26.3 EPK inspection complete"
+            echo
+            echo "**EPK:** eag26.3-assets.epk"
+            echo
+            echo "**SHA-256:** `$(sha256sum eag26.3-assets.epk | cut -d' ' -f1)`"
+            echo
+            echo "**Extracted files:** $(find extracted-26.3 -type f | wc -l)"
+            echo
+            echo "### Candidate stair/slab/bed assets"
+            if [[ -s analysis/vbv-candidate-files.txt ]]; then
+              echo '```'
+              cat analysis/vbv-candidate-files.txt
+              echo '```'
+            else
+              echo "No matching paths were found."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
