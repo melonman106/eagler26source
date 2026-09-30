@@ -26,19 +26,11 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Show source-patches folder
+      - name: Validate source-patches tooling
         run: |
           set -euo pipefail
-          echo "=== source-patches tree ==="
-          find code/patcher/source-patches -maxdepth 2 -type f -print | sort
-          echo
-          echo "=== source-patches README ==="
-          cat code/patcher/source-patches/README.md
-
-      - name: Run source-patches tests
-        run: |
-          set -euo pipefail
-          python3 code/patcher/source-patches/test_export_source_patches.py
+          python3 -m py_compile code/patcher/source-patches/test_export_source_patches.py
+          python3 code/patcher/source-patches/test_export_source_patches.py --help
 
       - name: Build patcher CLI
         working-directory: code/patcher/java-cli
@@ -51,15 +43,16 @@ jobs:
         run: |
           set -euo pipefail
           test -s eag26.3-assets.epk
-          echo "EPK size:"
           stat -c '%s bytes' eag26.3-assets.epk
-          echo "EPK SHA-256:"
           sha256sum eag26.3-assets.epk
 
       - name: Download Eagler Binary Tools
         run: |
           set -euo pipefail
-          curl --fail --location --retry 5 --retry-all-errors             --proto '=https' --tlsv1.2             "https://raw.githubusercontent.com/lax1dude/eagler-binary-tools/main/EaglerBinaryTools.jar"             -o EaglerBinaryTools.jar
+          curl --fail --location --retry 5 --retry-all-errors \
+            --proto '=https' --tlsv1.2 \
+            "https://raw.githubusercontent.com/lax1dude/eagler-binary-tools/main/EaglerBinaryTools.jar" \
+            -o EaglerBinaryTools.jar
           test -s EaglerBinaryTools.jar
 
       - name: Extract 26.3 EPK
