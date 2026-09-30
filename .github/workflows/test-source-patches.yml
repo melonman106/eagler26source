@@ -72,13 +72,6 @@ jobs:
           cp resource/vineflower-1.12.0.jar build-inputs/vineflower-1.12.0.jar
           test -s build-inputs/vineflower-1.12.0.jar
 
-      - name: Generate project skeleton
-        run: |
-          set -euo pipefail
-          python3 code/patcher/project-skeleton/export_skeleton.py \
-            --root "$GITHUB_WORKSPACE" \
-            --output "$GITHUB_WORKSPACE/output/project-skeleton-iwa.zip"
-
       - name: Look for a usable source patch input
         run: |
           set -euo pipefail
@@ -141,8 +134,6 @@ jobs:
             --java17 "$JAVA_HOME_17_X64/bin/java" \
             --patch-bundle "$GITHUB_WORKSPACE/build-inputs/source-patch-bundle.zip" \
             --expected-bundle-sha256  df3af583c06aa22748d21f039980cdd3923dbcab0bc21accbbb28b1cd1e7389 \
-            --project-skeleton "$GITHUB_WORKSPACE/build-inputs/project-skeleton-iwa.zip" \
-            --expected-skeleton-sha256 e76f606630ce6596061e7ac5a76d01a541846cac7d8d1424ec38a942ab00c071 \
             --java25 "$JAVA_HOME_25_X64/bin/java" \
             --node "$(command -v node)" \
             --npm "$(command -v npm)" \
