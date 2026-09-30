@@ -52,6 +52,21 @@ jobs:
           echo 'Generate an authorized project and place it at project/ or generated-project/ before running this workflow.'
           exit 1
 
+      - name: Fetch VBV companion assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/vbv-pack
+          git clone --depth 1 https://github.com/melonman106/ChatGPT.git /tmp/vbv-pack
+          pack=/tmp/vbv-pack/resourcepacks/ViaBackportVisuals-26.2-VBPlus-26.3-Companion
+          test -d "$pack/assets"
+          mkdir -p "${{ steps.project.outputs.dir }}/game/src/main/resources"
+          rm -rf "${{ steps.project.outputs.dir }}/game/src/main/resources/assets/minecraft/models/block"
+          mkdir -p "${{ steps.project.outputs.dir }}/game/src/main/resources/assets/minecraft/models/block"
+          cp -a "$pack/assets/minecraft/models/block/." "${{ steps.project.outputs.dir }}/game/src/main/resources/assets/minecraft/models/block/"
+          echo 'VBV model assets bundled into the native client resources.'
+          echo 'Blockstate overrides are deliberately not copied.'
+
       - name: Apply native VBV client integration
         run: |
           chmod +x ModdedClient/apply-vbv.sh
@@ -80,6 +95,7 @@ jobs:
             echo 'No HTML output was produced.'
             exit 1
           fi
+          echo 'Bundled VBV model resources are part of the generated client build.'
           ls -lh release
 
       - name: Upload HTML artifact
