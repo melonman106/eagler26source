@@ -1,0 +1,47 @@
+name: Extract U1 Patcher
+
+on:
+  workflow_dispatch:
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Download latest U1 Setup JAR from release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p download U1-Patcher
+          gh release download --repo "${GITHUB_REPOSITORY}" --pattern '*Setup.jar' --dir download --clobber
+
+          jar_file="$(find download -maxdepth 1 -type f -name '*Setup.jar' -print -quit)"
+          if [ -z "$jar_file" ]; then
+            echo "No *Setup.jar release asset was found."
+            exit 1
+          fi
+
+          echo "Using: $jar_file"
+          unzip -l "$jar_file" | head -40
+
+      - name: Extract Setup JAR to U1-Patcher
+        run: |
+          set -euo pipefail
+          jar_file="$(find download -maxdepth 1 -type f -name '*Setup.jar' -print -quit)"
+
+          rm -rf U1-Patcher
+          mkdir -p U1-Patcher
+          unzip -q "$jar_file" -d U1-Patcher
+
+          echo "Extracted U1-Patcher:"
+          find U1-Patcher -maxdepth 3 -type f | sort | head -200
+
+      - name: Upload extracted U1-Patcher
+        uses: actions/upload-artifact@v4
+        with:
+          name: U1-Patcher
+          path: U1-Patcher/
+          if-no-files-found: error
