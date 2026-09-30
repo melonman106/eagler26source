@@ -1,0 +1,134 @@
+name: Export Eagler 26.2 source patches
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_path:
+        description: "Path to the vanilla/decompiled 26.2 Java source tree"
+        required: false
+        default: "mojang-source"
+      final_path:
+        description: "Path to the modified Eagler 26.2 Java source tree"
+        required: false
+        default: "game/src/main/java"
+      require_frozen:
+        description: "Require the known frozen 26.2 source trees (90 add / 571 modify / 3 delete)"
+        required: false
+        type: boolean
+        default: false
+  push:
+    paths:
+      - "code/patcher/source-patches/**"
+      - ".github/workflows/export-source-patches.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Inspect available Java source trees
+        run: |
+          set -euo pipefail
+          echo "Repository Java source directories:"
+          find . -type d \( -path '*/src/main/java' -o -name 'mojang-source' \) -print | sort || true
+          echo
+          echo "Java file count:"
+          find . -type f -name '*.java' | wc -l
+
+      - name: Run exporter fixture
+        run: |
+          set -euo pipefail
+          python3 -m py_compile code/patcher/source-patches/export_source_patches.py
+          python3 -m py_compile code/patcher/source-patches/test_export_source_patches.py
+
+          python3 - <<'PY'
+          import tempfile
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, "code/patcher/source-patches")
+          import export_source_patches as esp
+
+          with tempfile.TemporaryDirectory() as td:
+              root = Path(td)
+              base = root / "base"
+              final = root / "final"
+              bundle = root / "bundle"
+              archive = root / "bundle.zip"
+
+              (base / "a").mkdir(parents=True)
+              (final / "a").mkdir(parents=True)
+              (base / "a" / "Keep.java").write_bytes(b"class Keep {}\n")
+              (base / "Delete.java").write_bytes(b"class Delete {}\n")
+              (final / "a" / "Keep.java").write_bytes(b"class Keep { int changed; }\n")
+              (final / "Add.java").write_bytes(b"class Add {}\n")
+
+              result = esp.export_bundle(base, final, bundle, archive)
+              assert result["counts"] == {"add": 1, "modify": 1, "delete": 1}
+
+              reconstructed = root / "reconstructed"
+              esp.apply_bundle(archive, base, reconstructed, esp.sha256_file(archive))
+              assert esp.scan_source(reconstructed) == esp.scan_source(final)
+
+              print("Exporter fixture passed")
+              print(result)
+              print("Archive SHA-256:", esp.sha256_file(archive))
+          PY
+
+      - name: Export real source patch bundle
+        env:
+          BASE_PATH: ${{ inputs.base_path }}
+          FINAL_PATH: ${{ inputs.final_path }}
+          REQUIRE_FROZEN: ${{ inputs.require_frozen }}
+        run: |
+          set -euo pipefail
+
+          if [[ ! -d "$BASE_PATH" ]]; then
+            echo "::error::Base source tree not found: $BASE_PATH"
+            echo "::error::The exporter needs a vanilla/decompiled 26.2 Java tree."
+            exit 1
+          fi
+
+          if [[ ! -d "$FINAL_PATH" ]]; then
+            echo "::error::Final source tree not found: $FINAL_PATH"
+            echo "::error::The exporter needs the modified Eagler 26.2 Java tree."
+            exit 1
+          fi
+
+          rm -rf build-output
+          mkdir -p build-output
+
+          if [[ "$REQUIRE_FROZEN" == "true" ]]; then
+            python3 code/patcher/source-patches/test_export_source_patches.py \
+              --base "$BASE_PATH" \
+              --final "$FINAL_PATH" \
+              --receipt "$GITHUB_WORKSPACE/build-output/acceptance-receipt.json" \
+              --require-frozen
+          fi
+
+          python3 code/patcher/source-patches/export_source_patches.py export \
+            --base "$BASE_PATH" \
+            --final "$FINAL_PATH" \
+            --output "$GITHUB_WORKSPACE/build-output/source-patch-bundle" \
+            --archive "$GITHUB_WORKSPACE/build-output/source-patch-bundle.zip"
+
+          echo
+          echo "Generated bundle:"
+          ls -lh build-output/source-patch-bundle.zip
+          echo "SHA-256:"
+          sha256sum build-output/source-patch-bundle.zip
+
+      - name: Upload generated source patch bundle
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eaglercraft-26.2-source-patch-bundle
+          path: build-output/
+          retention-days: 7
+          if-no-files-found: error
