@@ -1,0 +1,54 @@
+name: Extract source archive
+
+on:
+  workflow_dispatch:
+
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Find and extract tar.gz
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive="$(find . -maxdepth 3 -type f \( -name '*.tar.gz' -o -name '*.tgz' \) -print -quit)"
+
+          if [ -z "$archive" ]; then
+            echo "No .tar.gz or .tgz archive found in the repository."
+            exit 1
+          fi
+
+          echo "Using archive: $archive"
+
+          rm -rf code
+          mkdir -p code
+
+          tar -xzf "$archive" -C code --strip-components=1
+
+          echo "Extracted files:"
+          find code -type f | sort | head -200
+
+      - name: Commit extracted code
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add code
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Extract source archive into code"
+          git push
