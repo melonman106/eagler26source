@@ -1,10 +1,10 @@
-name: Test source-patches folder
+name: Full Eagler 26.2 compile test
 
 on:
   workflow_dispatch:
   push:
     paths:
-      - "code/patcher/source-patches/**"
+      - "code/patcher/**"
       - "eag26.3-assets.epk"
       - ".github/workflows/test-source-patches.yml"
 
@@ -12,9 +12,9 @@ permissions:
   contents: read
 
 jobs:
-  test-source-folder:
+  full-build-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
@@ -26,10 +26,23 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - name: Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+
+      - name: Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
       - name: Validate source-patches tooling
         run: |
           set -euo pipefail
+          python3 -m py_compile code/patcher/source-patches/export_source_patches.py
           python3 -m py_compile code/patcher/source-patches/test_export_source_patches.py
+          python3 code/patcher/source-patches/export_source_patches.py --help
           python3 code/patcher/source-patches/test_export_source_patches.py --help
 
       - name: Build patcher CLI
@@ -39,44 +52,113 @@ jobs:
           chmod +x build.sh run.sh
           ./build.sh
 
-      - name: Inspect 26.3 EPK input
+      - name: Download Minecraft 26.2 client
+        env:
+          MC_SHA1: 2dc72797acbc1b63fc16a11c4ac393605f453754
+          MC_SHA256: 40896ee9f1e2bec3c934daac7e93d41e9e3d9c2f8ae0ca366d52ffbfd1afa290
+        run: |
+          set -euo pipefail
+          mkdir -p build-inputs release
+          curl --fail --location --retry 5 --retry-all-errors \
+            --proto '=https' --tlsv1.2 \
+            "https://piston-data.mojang.com/v1/objects/$MC_SHA1/client.jar" \
+            -o build-inputs/minecraft-26.2-client.jar
+          test "$(sha256sum build-inputs/minecraft-26.2-client.jar | cut -d' ' -f1)" = "$MC_SHA256"
+          test "$(sha1sum build-inputs/minecraft-26.2-client.jar | cut -d' ' -f1)" = "$MC_SHA1"
+
+      - name: Copy Vineflower
+        run: |
+          set -euo pipefail
+          cp resource/vineflower-1.12.0.jar build-inputs/vineflower-1.12.0.jar
+          test -s build-inputs/vineflower-1.12.0.jar
+
+      - name: Generate project skeleton
+        run: |
+          set -euo pipefail
+          python3 code/patcher/project-skeleton/export_skeleton.py \
+            --root "$GITHUB_WORKSPACE" \
+            --output "$GITHUB_WORKSPACE/build-inputs/project-skeleton-iwa.zip"
+
+      - name: Look for a usable source patch input
+        run: |
+          set -euo pipefail
+          echo "The source-patches directory contains the exporter/test tooling."
+          echo "Checking whether the repository also contains an actual patch archive..."
+          find . -type f \( -iname '*source-patch*.zip' -o -iname '*patch-bundle*.zip' \) -print | sort || true
+          echo
+          echo "Source-patches files:"
+          find code/patcher/source-patches -maxdepth 1 -type f -printf '%p %s bytes\\n' | sort
+          if [[ ! -s resources/source-patch-bundle.zip ]]; then
+            echo "::notice::No source-patch-bundle.zip is present. The full Eagler build requires the actual Eagler-modified Java patch data; exporter scripts alone cannot replace it."
+          fi
+
+      - name: Inspect 26.3 EPK
         run: |
           set -euo pipefail
           test -s eag26.3-assets.epk
-          stat -c '%s bytes' eag26.3-assets.epk
+          echo "EPK SHA-256:"
           sha256sum eag26.3-assets.epk
-
-      - name: Download Eagler Binary Tools
-        run: |
-          set -euo pipefail
           curl --fail --location --retry 5 --retry-all-errors \
             --proto '=https' --tlsv1.2 \
             "https://raw.githubusercontent.com/lax1dude/eagler-binary-tools/main/EaglerBinaryTools.jar" \
             -o EaglerBinaryTools.jar
-          test -s EaglerBinaryTools.jar
-
-      - name: Extract 26.3 EPK
-        run: |
-          set -euo pipefail
           rm -rf extracted-26.3
           java -jar EaglerBinaryTools.jar epkdecompiler eag26.3-assets.epk extracted-26.3
-          test -d extracted-26.3
-          echo "Extracted file count:"
-          find extracted-26.3 -type f | wc -l
-          echo
-          echo "=== 26.3 VBV assets found ==="
           find extracted-26.3 -type f \
             \( -iname '*wool*stairs*' -o -iname '*wool*slab*' \
             -o -iname '*concrete*stairs*' -o -iname '*concrete*slab*' \
-            -o -iname '*straw*bed*' -o -iname '*hay_block*' \) \
-            | sort | head -300
+            -o -iname '*straw*bed*' \) | sort | head -300
 
-      - name: Upload test extraction
+      - name: Download 26.2 sounds and music
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 5 --retry-all-errors \
+            --proto '=https' --tlsv1.2 \
+            "https://github.com/eymenwsmc/playopspt.github.io/raw/refs/heads/main/262/sounds.epk" \
+            -o build-inputs/sounds.epk
+          curl --fail --location --retry 5 --retry-all-errors \
+            --proto '=https' --tlsv1.2 \
+            "https://eaglercraft-26-2-u1-cdn.u2471966200.workers.dev/eaglercraft-26.2-u1-music-resource-pack.zip" \
+            -o build-inputs/music-resource-pack.zip
+          unzip -j -o build-inputs/music-resource-pack.zip 'music.epk' -d build-inputs/
+          test -s build-inputs/sounds.epk
+          test -s build-inputs/music.epk
+
+      - name: Full Eagler build attempt
+        run: |
+          set -euo pipefail
+          if [[ ! -s resources/source-patch-bundle.zip ]]; then
+            echo "::error::Full Eagler compilation cannot start because the repository has no actual source-patch-bundle.zip."
+            echo "::error::code/patcher/source-patches contains the exporter/test programs, not the 26.2 Eagler Java patch data."
+            echo "::error::The workflow successfully prepared the official 26.2 client, Java toolchain, project skeleton, sounds, music, and 26.3 assets."
+            exit 1
+          fi
+          cp resources/source-patch-bundle.zip build-inputs/source-patch-bundle.zip
+          code/patcher/java-cli/run.sh build-standalone \
+            --jar "$GITHUB_WORKSPACE/build-inputs/minecraft-26.2-client.jar" \
+            --output "$GITHUB_WORKSPACE/project" \
+            --vineflower "$GITHUB_WORKSPACE/build-inputs/vineflower-1.12.0.jar" \
+            --java17 "$JAVA_HOME_17_X64/bin/java" \
+            --patch-bundle "$GITHUB_WORKSPACE/build-inputs/source-patch-bundle.zip" \
+            --expected-bundle-sha256  df3af583c06aa22748d21f039980cdd3923dbcab0bc21accbbb28b1cd1e7389 \
+            --project-skeleton "$GITHUB_WORKSPACE/build-inputs/project-skeleton-iwa.zip" \
+            --expected-skeleton-sha256 e76f606630ce6596061e7ac5a76d01a541846cac7d8d1424ec38a942ab00c071 \
+            --java25 "$JAVA_HOME_25_X64/bin/java" \
+            --node "$(command -v node)" \
+            --npm "$(command -v npm)" \
+            --sounds-epk "$GITHUB_WORKSPACE/build-inputs/sounds.epk" \
+            --music-epk "$GITHUB_WORKSPACE/build-inputs/music.epk" \
+            --standalone-output "$GITHUB_WORKSPACE/release/eaglercraft-26.2-test.html" \
+            --build-timeout-seconds 7200
+
+      - name: Upload generated project
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: source-patches-and-26.3-assets-test
+          name: eaglercraft-26.2-full-build-test
           path: |
+            project/
+            release/
             extracted-26.3/
-            code/patcher/source-patches/
           retention-days: 7
-          if-no-files-found: error
+          if-no-files-found: ignore
