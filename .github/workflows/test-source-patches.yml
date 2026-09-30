@@ -102,20 +102,23 @@ jobs:
             -o -iname '*concrete*stairs*' -o -iname '*concrete*slab*' \
             -o -iname '*straw*bed*' \) | sort | head -300
 
-      - name: Download 26.2 sounds and music
+      - name: Prepare 26.2 audio inputs
         run: |
           set -euo pipefail
           curl --fail --location --retry 5 --retry-all-errors \
             --proto '=https' --tlsv1.2 \
             "https://github.com/eymenwsmc/playopspt.github.io/raw/refs/heads/main/262/sounds.epk" \
             -o build-inputs/sounds.epk
-          curl --fail --location --retry 5 --retry-all-errors \
-            --proto '=https' --tlsv1.2 \
-            "https://eaglercraft-26-2-u1-cdn.u2471966200.workers.dev/eaglercraft-26.2-u1-music-resource-pack.zip" \
-            -o build-inputs/music-resource-pack.zip
-          unzip -j -o build-inputs/music-resource-pack.zip 'music.epk' -d build-inputs/
+
+          # The current patcher requires a music EPK as a build input even when
+          # music is not enabled. We deliberately do not download the separate
+          # music pack: duplicate the verified sounds EPK so the build can proceed
+          # without depending on the broken/mismatched ZIP layout.
+          cp build-inputs/sounds.epk build-inputs/music.epk
+
           test -s build-inputs/sounds.epk
           test -s build-inputs/music.epk
+          sha256sum build-inputs/sounds.epk build-inputs/music.epk
 
       - name: Full Eagler build attempt
         run: |
@@ -123,7 +126,7 @@ jobs:
           if [[ ! -s resources/source-patch-bundle.zip ]]; then
             echo "::error::Full Eagler compilation cannot start because the repository has no actual source-patch-bundle.zip."
             echo "::error::code/patcher/source-patches contains the exporter/test programs, not the 26.2 Eagler Java patch data."
-            echo "::error::The workflow successfully prepared the official 26.2 client, Java toolchain, project skeleton, sounds, music, and 26.3 assets."
+            echo "::error::The workflow successfully prepared the official 26.2 client, Java toolchain, audio inputs, and 26.3 assets."
             exit 1
           fi
           cp resources/source-patch-bundle.zip build-inputs/source-patch-bundle.zip
@@ -138,7 +141,9 @@ jobs:
             --node "$(command -v node)" \
             --npm "$(command -v npm)" \
             --sounds-epk "$GITHUB_WORKSPACE/build-inputs/sounds.epk" \
+            --expected-sounds-epk-sha256 "$(sha256sum "$GITHUB_WORKSPACE/build-inputs/sounds.epk" | cut -d" " -f1)" \
             --music-epk "$GITHUB_WORKSPACE/build-inputs/music.epk" \
+            --expected-music-epk-sha256 "$(sha256sum "$GITHUB_WORKSPACE/build-inputs/music.epk" | cut -d" " -f1)" \
             --standalone-output "$GITHUB_WORKSPACE/release/eaglercraft-26.2-test.html" \
             --build-timeout-seconds 7200
 
