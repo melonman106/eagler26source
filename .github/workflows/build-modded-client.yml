@@ -1,0 +1,102 @@
+name: Build Modded Eagler 26.2 client
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Check required folders
+        run: |
+          test -d code/patcher
+          test -d ModdedClient
+          echo 'Patcher and ModdedClient are present.'
+
+      - name: Build Eagler patcher
+        working-directory: code/patcher/java-cli
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Find generated Eagler project
+        id: project
+        shell: bash
+        run: |
+          set -euo pipefail
+          for dir in project generated-project; do
+            if [[ -f "$dir/build.gradle.kts" && -d "$dir/game/src/main/java" ]]; then
+              echo "dir=$dir" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo 'No generated Eagler 26.2 project is present.'
+          echo 'The repository intentionally does not redistribute restricted/decompiled game inputs.'
+          echo 'Generate an authorized project and place it at project/ or generated-project/ before running this workflow.'
+          exit 1
+
+      - name: Apply native VBV client integration
+        run: |
+          chmod +x ModdedClient/apply-vbv.sh
+          ModdedClient/apply-vbv.sh "${{ steps.project.outputs.dir }}"
+
+      - name: Compile client Java
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: ./gradlew :game:compileJava --console=plain --no-daemon
+
+      - name: Build standalone HTML
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: ./gradlew build --console=plain --no-daemon
+
+      - name: Collect HTML release
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf release
+          mkdir -p release
+          found=0
+          while IFS= read -r -d '' file; do
+            cp "$file" "release/$(basename "$file")"
+            found=1
+          done < <(find "${{ steps.project.outputs.dir }}" -type f -name '*.html' -print0)
+          if [[ "$found" -eq 0 ]]; then
+            echo 'No HTML output was produced.'
+            exit 1
+          fi
+          ls -lh release
+
+      - name: Upload HTML artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Eaglercraft-26.2-ViaBackportVisuals
+          path: release/
+          if-no-files-found: error
+
+      - name: Commit release folder
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add release
+          if git diff --cached --quiet; then
+            echo 'No release changes to commit.'
+            exit 0
+          fi
+          git commit -m 'Build ViaBackportVisuals Eagler client release'
+          git push
